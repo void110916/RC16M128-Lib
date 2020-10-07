@@ -19,7 +19,6 @@ void BasicTimer_Init(void)
 	TIM_put(&OCR3AL,2,&ocr3);//use OCR3;
 }
 
-
 void RC16M128_Servo_Init(void)
 {
 	BasicTimer_Init();
