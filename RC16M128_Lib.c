@@ -1,39 +1,68 @@
 #include "c4mlib.h"
 #include "RC16M128_Lib.h"
 
-// Global value define:
-volatile unsigned char ServoPWMOutputDataL = 0, ServoPWMOutputDataH = 0;
-volatile unsigned char ServoEnableSetRegisterL = 0, ServoEnableSetRegisterH = 0;
-volatile unsigned char ServoCommand[ServoNum] = {45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45};
-volatile unsigned int  ServoPeriodCount = 0;
 
-/*----------------------副函式----------------------*/
-void BasicTimer_Init(void)
+// Global value define:
+volatile uint8_t CaseCount = 0;
+volatile uint8_t ServoPeriodCount = 1;
+uint16_t ServoCommand[128] = {0};
+uint16_t dat[6] = {0};
+
+//除頻: 8 , ocr: 690 , 週期: 0.499855 ms , error: 0.145us
+#define _case0_Timer_Init        \
+	REGFPT(&ETIMSK, 0x10, 4, 0); \
+	REGFPT(&TCCR3B, 0x07, 0, 2); \
+	OCR3A = 690;                 \
+	TCNT3 = 0;                   \
+	REGFPT(&ETIMSK, 0x10, 4, 1); 
+
+//除頻: 64 , ocr: 2 , 週期: 17.361*115 us(1.996528 us) , error: 3.472us
+#define _case1_Timer_Init        \
+	REGFPT(&ETIMSK, 0x10, 4, 0); \
+	REGFPT(&TCCR3B, 0x07, 0, 3); \
+	OCR3A = 2;                   \
+	TCNT3 = 0;                   \
+	REGFPT(&ETIMSK, 0x10, 4, 1); 
+
+//除頻: 1024 , ocr: 188 , 週期: 17.5 ms , error: 0 us
+#define _case2_Timer_Init        \
+	REGFPT(&ETIMSK, 0x10, 4, 0); \
+	REGFPT(&TCCR3B, 0x07, 0, 5); \
+	OCR3A = 188;                 \
+	TCNT3 = 0;                   \
+	REGFPT(&ETIMSK, 0x10, 4, 1); 
+
+
+void Basic_Timer_Init(void)
 {
-	/*計時器中斷設定*/	
-	TIM_fpt(&TCCR3B,0x07,0,1);//選擇timer3 T/Cn除頻1
+    /*計時器中斷設定*/	
 	TIM_fpt(&TCCR3A,0x03,0,0);//set timer3 CTC可調方波step1
 	TIM_fpt(&TCCR3B,0x18,3,1);//set timer3 CTC可調方波step2
+	_case0_Timer_Init;
 	TIM_fpt(&ETIMSK,0x10,4,1);//timer3 interrupt enable
-	unsigned int ocr3=245;
-	TIM_put(&OCR3AL,2,&ocr3);//use OCR3;
 }
-
 
 void RC16M128_Servo_Init(void)
 {
-	BasicTimer_Init();
+	Basic_Timer_Init();
 	ServoDDRL  = 0x00;
 	ServoPORTL = 0x00;
 	ServoDDRH  = 0x00;
 	ServoPORTH = 0x00;
 }
 
+char ASA_RC16M128_set(void)
+{
+	RC16M128_Servo_Init();
+	sei();
+	return 0;
+}
+
 char RC16M128_Servo_put(char LSByte, char Bytes, void* Data_p)
 {
-	unsigned char i;
-
-	// 參數檢查
+    static uint8_t last_value[16] = {0};
+    int i = 0;
+    // 參數檢查
 	if( LSByte > 15 || LSByte < 0)
 	return 1;
 	if( (LSByte+Bytes) > 16 || (LSByte+Bytes) < 1 )
@@ -41,9 +70,12 @@ char RC16M128_Servo_put(char LSByte, char Bytes, void* Data_p)
 
 	// 輸出資料
 	for(i=0; i<Bytes; i++)
-	ServoCommand[LSByte+i] = ((unsigned char*)Data_p)[i];
-
-	return 0;
+    {
+        ServoCommand[last_value[LSByte + i]] &= ~(1 << i);
+        ServoCommand[((uint8_t *)Data_p)[LSByte + i]] |= (1 << i);
+		last_value[LSByte + i] = ((uint8_t *)Data_p)[LSByte + i];
+	}
+    return 0;
 }
 
 char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
@@ -66,8 +98,6 @@ char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
 	for(i=0; i<Bytes; i++)
 	((unsigned char*)Data_p)[i] = ServoCommand[LSByte+i];
 
-
-
 	// Put跟Set回應
 	if( RegMode == 0 )
 	for(i=0; i<Bytes; i++)
@@ -83,7 +113,6 @@ char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
 			((char*)Data_p)[0] = ServoDDRL;
 		}
 	}
-
 	return 0;
 }
 
@@ -114,73 +143,53 @@ char RC16M128_Servo_set(char LSByte, char Mask, char shift, char Data)
 	return 0;
 }
 
-char ASA_RC16M128_set(void)
-{
-	char Result = 0;
-	RC16M128_Servo_Init();
-	sei();
-	
-	return Result;
-}
-
 // 16通道伺服機PWM訊號產生器
 ISR( TIMER3_COMPA_vect )
 {
 	// RC Servo PWM Command Timing Diagram
-	//       _____                                 _____                                 _____
-	// _____|     |_______________________________|     |_______________________________|     |______
-	//      |<-1->|
-	//      |<-----------------2----------------->|
-	// 1: ServoCommand		0~120
-	//    Period Range  0.5ms~2.5ms
-	// 2: ServoPeriodCount	0~1199
-	// ServoBasePeriod: 1200 = PWM one Wave(2) Frequency: 50Hz(20ms)
-	int CountTemp;
-	
-	// 比對到脈寬結束時機，該通道拉到Low
-	CountTemp = ServoPeriodCount-22;	// Shift 0.5ms
+	//       _____ _________                       _____ _________                       _____ ______
+	// _____|     |_________|_____________________|     |_________|_____________________|     |______
+	//      |<-0->|<---1--->|<---------2--------->|
+	// 
+	// 0: 電位拉高   
+	//    經過時間: 0.5 ms  
+	// 1: 依角度拉低
+	//    分割: 115份
+	//    經過時間: 2 ms 
+	// 2: 電位拉低
+	//    經過時間: 17.5 ms
+	// PWM one Wave(2) Frequency: 50Hz(20ms)
 
-	if( CountTemp <= 90)
+
+	if (CaseCount==0)
 	{
-		if( CountTemp == ServoCommand[0] )
-		ServoPORTL -= 1;
-		if( CountTemp == ServoCommand[1] )
-		ServoPORTL -= 2;
-		if( CountTemp == ServoCommand[2] )
-		ServoPORTL -= 4;
-		if( CountTemp == ServoCommand[3] )
-		ServoPORTL -= 8;
-		if( CountTemp == ServoCommand[4] )
-		ServoPORTL -= 16;
-		if( CountTemp == ServoCommand[5] )
-		ServoPORTL -= 32;
-		if( CountTemp == ServoCommand[6] )
-		ServoPORTL -= 64;
-		if( CountTemp == ServoCommand[7] )
-		ServoPORTL -= 128;
-		if( CountTemp == ServoCommand[8] )
-		ServoPORTH -= 1;
-		if( CountTemp == ServoCommand[9] )
-		ServoPORTH -= 2;
-		if( CountTemp == ServoCommand[10] )
-		ServoPORTH -= 4;
-		if( CountTemp == ServoCommand[11] )
-		ServoPORTH -= 8;
-		if( CountTemp == ServoCommand[12] )
-		ServoPORTH -= 16;
-		if( CountTemp == ServoCommand[13] )
-		ServoPORTH -= 32;
-		if( CountTemp == ServoCommand[14] )
-		ServoPORTH -= 64;
-		if( CountTemp == ServoCommand[15] )
-		ServoPORTH -= 128;
+		_case1_Timer_Init;
+		ServoPORTL &= ~((ServoCommand[ServoPeriodCount--] & 0xff));
+		ServoPORTH &= ~(((ServoCommand[ServoPeriodCount--] >> 8) & 0xff));
+		CaseCount = 1;
 	}
-	ServoPeriodCount++;
-	// 新一輪週期開始，全部拉到High
-	if( ServoPeriodCount > ServoBasePeriod )
+	else if (CaseCount==1)
 	{
-		ServoPeriodCount = 0;
-		ServoPORTL = 255;
-		ServoPORTH = 255;
+		ServoPORTL &= ~((ServoCommand[ServoPeriodCount] & 0xff));
+		ServoPORTH &= ~(((ServoCommand[ServoPeriodCount] >> 8) & 0xff));
+
+		if (ServoPeriodCount==115)
+		{
+			ServoPORTL = 0;
+			ServoPORTH = 0;
+			_case2_Timer_Init;
+			CaseCount = 2;
+			ServoPeriodCount = 0;
+			realTimeFunc();
+		}
+		ServoPeriodCount++;
 	}
+	else if (CaseCount==2)
+	{
+		ServoPORTL = 0xff;
+		ServoPORTH = 0xff;
+		_case0_Timer_Init;
+		CaseCount = 0;
+	}
+	
 }
