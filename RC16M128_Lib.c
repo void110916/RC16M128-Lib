@@ -82,7 +82,6 @@ char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
 			((char*)Data_p)[0] = ServoDDRL;
 		}
 	}
-
 	return 0;
 }
 
