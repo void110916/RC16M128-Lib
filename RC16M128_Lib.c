@@ -5,22 +5,22 @@
 // Global value define:
 volatile uint8_t CaseCount = 0;
 volatile uint8_t ServoPeriodCount = 1;
-uint16_t ServoCommand[128] = {0};
+uint16_t ServoCommand[256] = {0};
 uint16_t dat[6] = {0};
 
 //除頻: 8 , ocr: 690 , 週期: 0.499855 ms , error: 0.145us
 #define _case0_Timer_Init        \
 	REGFPT(&ETIMSK, 0x10, 4, 0); \
 	REGFPT(&TCCR3B, 0x07, 0, 2); \
-	OCR3A = 690;                 \
+	OCR3A = 680;                 \
 	TCNT3 = 0;                   \
 	REGFPT(&ETIMSK, 0x10, 4, 1); 
 
-//除頻: 64 , ocr: 2 , 週期: 17.361*115 us(1.996528 us) , error: 3.472us
+//除頻: 64 , ocr: 1 , 週期: 7.957*251 us(1.997251 us) , error: 2.749us
 #define _case1_Timer_Init        \
 	REGFPT(&ETIMSK, 0x10, 4, 0); \
 	REGFPT(&TCCR3B, 0x07, 0, 3); \
-	OCR3A = 2;                   \
+	OCR3A = 1;                  \
 	TCNT3 = 0;                   \
 	REGFPT(&ETIMSK, 0x10, 4, 1); 
 
@@ -55,6 +55,7 @@ char ASA_RC16M128_set(void)
 {
 	RC16M128_Servo_Init();
 	sei();
+	
 	return 0;
 }
 
@@ -98,6 +99,8 @@ char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
 	for(i=0; i<Bytes; i++)
 	((unsigned char*)Data_p)[i] = ServoCommand[LSByte+i];
 
+
+
 	// Put跟Set回應
 	if( RegMode == 0 )
 	for(i=0; i<Bytes; i++)
@@ -113,6 +116,7 @@ char RC16M128_Servo_get(char LSByte, char Bytes, void* Data_p)
 			((char*)Data_p)[0] = ServoDDRL;
 		}
 	}
+
 	return 0;
 }
 
@@ -160,6 +164,7 @@ ISR( TIMER3_COMPA_vect )
 	//    經過時間: 17.5 ms
 	// PWM one Wave(2) Frequency: 50Hz(20ms)
 
+	
 
 	if (CaseCount==0)
 	{
@@ -173,13 +178,14 @@ ISR( TIMER3_COMPA_vect )
 		ServoPORTL &= ~((ServoCommand[ServoPeriodCount] & 0xff));
 		ServoPORTH &= ~(((ServoCommand[ServoPeriodCount] >> 8) & 0xff));
 
-		if (ServoPeriodCount==115)
+
+		if (ServoPeriodCount==172)
 		{
 			ServoPORTL = 0;
 			ServoPORTH = 0;
 			_case2_Timer_Init;
 			CaseCount = 2;
-			ServoPeriodCount = 0;
+			ServoPeriodCount = 1;
 			realTimeFunc();
 		}
 		ServoPeriodCount++;
@@ -191,5 +197,6 @@ ISR( TIMER3_COMPA_vect )
 		_case0_Timer_Init;
 		CaseCount = 0;
 	}
+	
 	
 }
